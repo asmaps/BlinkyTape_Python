@@ -25,6 +25,8 @@ class ModeManager(object):
             sys.stdout.write("%.02f fps                    \r" % (1.0/diff))
 
 if __name__ == "__main__":
+    from modes import modes
+    from modes import moving_dot
     mm = ModeManager()
     from IPython import embed
     embed()

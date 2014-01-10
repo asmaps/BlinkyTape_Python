@@ -1,4 +1,5 @@
 import random
+import math
 from .base import BaseMode
 from .mixins import FixedColorMixin
 
@@ -141,4 +142,163 @@ class PoliceMode2(BaseMode):
         self.step += 1
         if self.step >= self.max_steps:
             self.step = 0
+
+
+class BinaryClockMode(BaseMode):
+    fps = 4
+
+    def calc_next_step(self):
+        pass
+
+
+class UnicolorAmbiTapeMode(BaseMode):
+    fps = 60
+    col = [0, 0, 0]
+    fade_speed = 0.3
+    scale_brightness = 0.5
+    min_change = 1
+
+    def __init__(self, *args, **kwargs):
+        super(UnicolorAmbiTapeMode, self).__init__(*args, **kwargs)
+
+    def calc_next_step(self):
+        import gtk.gdk
+        from PIL import Image
+        from PIL import ImageStat
+        self.w = gtk.gdk.get_default_root_window()
+        self.sz = self.w.get_size()
+        pb = gtk.gdk.Pixbuf(gtk.gdk.COLORSPACE_RGB, False, 8, self.sz[0], self.sz[1])
+        pb = pb.get_from_drawable(self.w, self.w.get_colormap(), 0, 0, 0, 0, self.sz[0], self.sz[1])
+        if not pb:
+            print('Error: cannot capture screen')
+            return False
+        width, height = pb.get_width(), pb.get_height()
+        img = Image.frombytes("RGB", (width, height), pb.get_pixels())
+        s = ImageStat.Stat(img)
+        avg = s.median
+        for i in range(3):
+            self.col[i] *= 1.0 - self.fade_speed
+            c = int(max(avg[i]*self.scale_brightness, 10) * self.fade_speed)
+            if not self.col[i] == avg[i] * self.scale_brightness and c < self.min_change:
+                c = self.min_change
+            self.col[i] += c
+            self.col[i] = int(self.col[i])
+        for ind in range(len(self.colors)):
+            self.colors[ind] = (int(self.col[0]), int(self.col[1]), int(self.col[2]))
+
+
+class MulticolorAmbiTapeMode(BaseMode):
+    fps = 200
+    current_colors = list()
+    target_colors = list()
+    fade_speed = 0.3
+    scale_brightness = 0.5
+    min_change = 1
+    left_led_count = 14
+    top_led_count = 32
+    right_led_count = 14
+    grid_height = 8
+    grid_width = 16
+    masks = list()
+    frame_count = 10
+
+    def __init__(self, *args, **kwargs):
+        import gtk.gdk
+        from PIL import Image
+        super(MulticolorAmbiTapeMode, self).__init__(*args, **kwargs)
+        for i in range(self.led_count):
+            self.current_colors.append([0, 0, 0])
+            self.target_colors.append([0, 0, 0])
+        self.w = gtk.gdk.get_default_root_window()
+        self.sz = self.w.get_size()
+        box_width = int(self.sz[0] / self.grid_width)
+        box_height = int(self.sz[1] / self.grid_height)
+        overlay = Image.new('1', (box_width, box_height), color='white')
+        for idx in range(self.grid_height):
+            img = Image.new('1', self.sz, color='black')
+            x = 0
+            y = box_height * (self.grid_height - idx - 1)
+            img.paste(
+                overlay, box=(x, y)
+            )
+            self.masks.append(img)
+        for idx in range(self.grid_width):
+            img = Image.new('1', self.sz, color='black')
+            x = (self.sz[0] / self.grid_width) * idx
+            y = 0
+            img.paste(
+                overlay, box=(x, y)
+            )
+            self.masks.append(img)
+        for idx in range(self.grid_height):
+            img = Image.new('1', self.sz, color='black')
+            x = self.sz[0] - (self.sz[0] / self.grid_width)
+            y = (self.sz[1] / self.grid_height) * idx
+            img.paste(
+                overlay, box=(x, y)
+            )
+            self.masks.append(img)
+
+    def calc_next_step(self):
+        def calc_next_color(img, led, mask):
+            if led >= len(self.colors):
+                return
+            s = ImageStat.Stat(img, mask)
+            avg = s.median
+            for i in range(3):
+                self.current_colors[led][i] *= 1.0 - self.fade_speed
+                c = int(max(avg[i] * self.scale_brightness, 10) * self.fade_speed)
+                if not self.current_colors[led][i] == avg[i] * self.scale_brightness and c < self.min_change:
+                    c = self.min_change
+                self.current_colors[led][i] += c
+                self.current_colors[led][i] = int(self.current_colors[led][i])
+            return tuple([int(self.current_colors[led][0]), int(self.current_colors[led][1]), int(self.current_colors[led][2])])
+
+        self.frame_count += 1
+        if self.frame_count >= 10:
+            self.frame_count = 0
+            # capture screenshot
+            import gtk.gdk
+            from PIL import Image
+            from PIL import ImageStat
+            pb = gtk.gdk.Pixbuf(gtk.gdk.COLORSPACE_RGB, False, 8, self.sz[0], self.sz[1])
+            pb = pb.get_from_drawable(self.w, self.w.get_colormap(), 0, 0, 0, 0, self.sz[0], self.sz[1])
+            if not pb:
+                print('Error: cannot capture screen')
+                return False
+            width, height = pb.get_width(), pb.get_height()
+            img = Image.frombytes("RGB", (width, height), pb.get_pixels())
+            leds_per_box = int(math.ceil(self.left_led_count / float(self.grid_height)))
+            for idx in range(self.grid_height):
+                col = calc_next_color(
+                    img,
+                    idx * leds_per_box,
+                    self.masks[idx]
+                )
+                for led in range(leds_per_box):
+                    self.colors[idx * leds_per_box + led] = col
+            leds_per_box = int(math.ceil(self.top_led_count / float(self.grid_width)))
+            led_offset = self.left_led_count
+            box_offset = self.grid_height
+            for idx in range(self.grid_width):
+                col = calc_next_color(
+                    img,
+                    idx * leds_per_box + led_offset,
+                    self.masks[idx + box_offset]
+                )
+                for led in range(leds_per_box):
+                    self.colors[led_offset + idx * leds_per_box + led] = col
+            leds_per_box = int(math.ceil(self.right_led_count / float(self.grid_height)))
+            led_offset = self.left_led_count + self.top_led_count
+            box_offset = self.grid_height + self.grid_width
+            for idx in range(self.grid_height):
+                col = calc_next_color(
+                    img,
+                    idx * leds_per_box + led_offset,
+                    self.masks[idx + box_offset]
+                )
+                for led in range(leds_per_box):
+                    index = led_offset + idx * leds_per_box + led
+                    if index < len(self.colors):
+                        self.colors[index] = col
 
