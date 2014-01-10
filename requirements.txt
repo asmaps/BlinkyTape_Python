@@ -1,3 +1,5 @@
 pyserial
 ipython
+#for amblight
 pillow
+pygtk
