@@ -191,8 +191,9 @@ class MulticolorAmbiTapeMode(BaseMode):
     fps = 200
     current_colors = list()
     target_colors = list()
-    fade_speed = 0.3
+    fade_speed = 0.1
     scale_brightness = 0.5
+    min_brightness = 0
     min_change = 1
     left_led_count = 14
     top_led_count = 32
@@ -213,13 +214,14 @@ class MulticolorAmbiTapeMode(BaseMode):
         self.sz = self.w.get_size()
         box_width = int(self.sz[0] / self.grid_width)
         box_height = int(self.sz[1] / self.grid_height)
-        overlay = Image.new('1', (box_width, box_height), color='white')
+        h_overlay = Image.new('1', (box_width*2, box_height), color='white')
+        v_overlay = Image.new('1', (box_width, box_height*2), color='white')
         for idx in range(self.grid_height):
             img = Image.new('1', self.sz, color='black')
             x = 0
             y = box_height * (self.grid_height - idx - 1)
             img.paste(
-                overlay, box=(x, y)
+                h_overlay, box=(x, y)
             )
             self.masks.append(img)
         for idx in range(self.grid_width):
@@ -227,7 +229,7 @@ class MulticolorAmbiTapeMode(BaseMode):
             x = (self.sz[0] / self.grid_width) * idx
             y = 0
             img.paste(
-                overlay, box=(x, y)
+                v_overlay, box=(x, y)
             )
             self.masks.append(img)
         for idx in range(self.grid_height):
@@ -235,25 +237,11 @@ class MulticolorAmbiTapeMode(BaseMode):
             x = self.sz[0] - (self.sz[0] / self.grid_width)
             y = (self.sz[1] / self.grid_height) * idx
             img.paste(
-                overlay, box=(x, y)
+                h_overlay, box=(x, y)
             )
             self.masks.append(img)
 
     def calc_next_step(self):
-        def calc_next_color(img, led, mask):
-            if led >= len(self.colors):
-                return
-            s = ImageStat.Stat(img, mask)
-            avg = s.median
-            for i in range(3):
-                self.current_colors[led][i] *= 1.0 - self.fade_speed
-                c = int(max(avg[i] * self.scale_brightness, 10) * self.fade_speed)
-                if not self.current_colors[led][i] == avg[i] * self.scale_brightness and c < self.min_change:
-                    c = self.min_change
-                self.current_colors[led][i] += c
-                self.current_colors[led][i] = int(self.current_colors[led][i])
-            return tuple([int(self.current_colors[led][0]), int(self.current_colors[led][1]), int(self.current_colors[led][2])])
-
         self.frame_count += 1
         if self.frame_count >= 10:
             self.frame_count = 0
@@ -268,37 +256,62 @@ class MulticolorAmbiTapeMode(BaseMode):
                 return False
             width, height = pb.get_width(), pb.get_height()
             img = Image.frombytes("RGB", (width, height), pb.get_pixels())
-            leds_per_box = int(math.ceil(self.left_led_count / float(self.grid_height)))
-            for idx in range(self.grid_height):
-                col = calc_next_color(
-                    img,
-                    idx * leds_per_box,
-                    self.masks[idx]
-                )
-                for led in range(leds_per_box):
-                    self.colors[idx * leds_per_box + led] = col
-            leds_per_box = int(math.ceil(self.top_led_count / float(self.grid_width)))
-            led_offset = self.left_led_count
-            box_offset = self.grid_height
-            for idx in range(self.grid_width):
-                col = calc_next_color(
-                    img,
-                    idx * leds_per_box + led_offset,
-                    self.masks[idx + box_offset]
-                )
-                for led in range(leds_per_box):
-                    self.colors[led_offset + idx * leds_per_box + led] = col
-            leds_per_box = int(math.ceil(self.right_led_count / float(self.grid_height)))
-            led_offset = self.left_led_count + self.top_led_count
-            box_offset = self.grid_height + self.grid_width
-            for idx in range(self.grid_height):
-                col = calc_next_color(
-                    img,
-                    idx * leds_per_box + led_offset,
-                    self.masks[idx + box_offset]
-                )
-                for led in range(leds_per_box):
-                    index = led_offset + idx * leds_per_box + led
-                    if index < len(self.colors):
-                        self.colors[index] = col
+            for idx in range(self.grid_height * 2 + self.grid_width):
+                s = ImageStat.Stat(img, self.masks[idx])
+                self.target_colors[idx] = s.median
 
+        def next_fade_step(block):
+            try:
+                for i in range(3):
+                    self.current_colors[block][i] *= 1.0 - self.fade_speed
+                    c = max(self.target_colors[block][i] * self.scale_brightness, self.min_brightness) * self.fade_speed
+                    # if not self.current_colors[block][i] == self.target_colors[block][i] * self.scale_brightness and \
+                    #         c < self.min_change:
+                    #     c = self.min_change
+                    # if self.current_colors[block][i] > self.target_colors[block][i] * self.scale_brightness and \
+                    #         c > self.min_change * -1:
+                    #     c = -1
+                    self.current_colors[block][i] += c
+                    self.current_colors[block][i] = self.current_colors[block][i]
+            except IndexError:
+                pass
+
+                # left
+        leds_per_box = int(math.ceil(self.left_led_count / float(self.grid_height)))
+        for idx in range(self.grid_height):
+            next_fade_step(idx)
+            for led in range(leds_per_box):
+                self.colors[idx * leds_per_box + led] = tuple([
+                    int(self.current_colors[idx][0]),
+                    int(self.current_colors[idx][1]),
+                    int(self.current_colors[idx][2]),
+                ])
+
+        # top
+        leds_per_box = int(math.ceil(self.top_led_count / float(self.grid_width)))
+        led_offset = self.left_led_count
+        box_offset = self.grid_height
+        for idx in range(self.grid_width):
+            next_fade_step(idx + box_offset)
+            for led in range(leds_per_box):
+                self.colors[led_offset + idx * leds_per_box + led] = tuple([
+                    int(self.current_colors[idx + box_offset][0]),
+                    int(self.current_colors[idx + box_offset][1]),
+                    int(self.current_colors[idx + box_offset][2]),
+                ])
+
+        # right
+        leds_per_box = int(math.ceil(self.right_led_count / float(self.grid_height)))
+        led_offset = self.left_led_count + self.top_led_count
+        box_offset = self.grid_height + self.grid_width
+        for idx in range(self.grid_height):
+            next_fade_step(idx + box_offset)
+            for led in range(leds_per_box):
+                try:
+                    self.colors[led_offset + idx * leds_per_box + led] = tuple([
+                        int(self.current_colors[idx + box_offset][0]),
+                        int(self.current_colors[idx + box_offset][1]),
+                        int(self.current_colors[idx + box_offset][2]),
+                    ])
+                except IndexError:
+                    pass
