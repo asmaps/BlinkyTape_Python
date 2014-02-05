@@ -1,7 +1,20 @@
 import random
 import math
+import threading
 from .base import BaseMode
 from .mixins import FixedColorMixin
+
+
+class FixedColorMode(BaseMode):
+    fps = 1
+
+    def __init__(self, fps=None, led_count=None, no_sleep=None, color=(0,0,255), *args, **kwargs):
+        self.colors = list()
+        for i in range(self.led_count):
+            self.colors.append(color)
+
+    def calc_next_step(self):
+        pass
 
 
 class RandomFlashMode(FixedColorMixin, BaseMode):
@@ -151,7 +164,14 @@ class BinaryClockMode(BaseMode):
         pass
 
 
-class UnicolorAmbiTapeMode(BaseMode):
+class BaseAmbiMode(BaseMode):
+    padding_left = 1920
+    padding_top = 0
+    padding_right = 0
+    padding_bottom = 200
+
+
+class UnicolorAmbiTapeMode(BaseAmbiMode):
     fps = 60
     col = [0, 0, 0]
     fade_speed = 0.3
@@ -187,7 +207,39 @@ class UnicolorAmbiTapeMode(BaseMode):
             self.colors[ind] = (int(self.col[0]), int(self.col[1]), int(self.col[2]))
 
 
-class MulticolorAmbiTapeMode(BaseMode):
+class ColorCalculatorThread(threading.Thread):
+    def __init__(self, parent):
+        self.parent = parent
+        threading.Thread.__init__(self)
+
+    def run(self):
+        self.calc_new_target_colors()
+
+    def calc_new_target_colors(self):
+        while self.parent.frames > 0:
+            self.parent.frames = 0
+            tmp = self.parent.target_colors
+            #tmp = list(self.parent.target_colors)
+            # capture screenshot
+            import gtk.gdk
+            from PIL import Image
+            from PIL import ImageStat
+
+            pb = gtk.gdk.Pixbuf(gtk.gdk.COLORSPACE_RGB, False, 8, self.parent.sz[0], self.parent.sz[1])
+            pb = pb.get_from_drawable(self.parent.w, self.parent.w.get_colormap(), 0, 0, 0, 0, self.parent.sz[0],
+                                      self.parent.sz[1])
+            if not pb:
+                print('Error: cannot capture screen')
+                return False
+            width, height = pb.get_width(), pb.get_height()
+            img = Image.frombytes("RGB", (width, height), pb.get_pixels())
+            for idx in range(self.parent.grid_height * 2 + self.parent.grid_width):
+                s = ImageStat.Stat(img, self.parent.masks[idx])
+                tmp[idx] = s.median
+            self.parent.target_colors = tmp
+
+
+class MulticolorAmbiTapeMode(BaseAmbiMode):
     fps = 200
     current_colors = list()
     target_colors = list()
@@ -201,7 +253,7 @@ class MulticolorAmbiTapeMode(BaseMode):
     grid_height = 8
     grid_width = 16
     masks = list()
-    frame_count = 10
+    frames = 0
 
     def __init__(self, *args, **kwargs):
         import gtk.gdk
@@ -212,53 +264,46 @@ class MulticolorAmbiTapeMode(BaseMode):
             self.target_colors.append([0, 0, 0])
         self.w = gtk.gdk.get_default_root_window()
         self.sz = self.w.get_size()
-        box_width = int(self.sz[0] / self.grid_width)
-        box_height = int(self.sz[1] / self.grid_height)
+        self.effective_height = self.sz[1] - self.padding_bottom - self.padding_top
+        self.effective_width = self.sz[0] - self.padding_right - self.padding_left
+        box_width = int(self.effective_width / self.grid_width)
+        box_height = int(self.effective_height / self.grid_height)
         h_overlay = Image.new('1', (box_width*2, box_height), color='white')
         v_overlay = Image.new('1', (box_width, box_height*2), color='white')
+        # left edge
         for idx in range(self.grid_height):
             img = Image.new('1', self.sz, color='black')
-            x = 0
-            y = box_height * (self.grid_height - idx - 1)
+            x = self.padding_left
+            y = box_height * (self.grid_height - idx - 1) + self.padding_top
             img.paste(
                 h_overlay, box=(x, y)
             )
             self.masks.append(img)
+        # top edge
         for idx in range(self.grid_width):
             img = Image.new('1', self.sz, color='black')
-            x = (self.sz[0] / self.grid_width) * idx
-            y = 0
+            x = box_width * idx + self.padding_left
+            y = self.padding_top
             img.paste(
                 v_overlay, box=(x, y)
             )
             self.masks.append(img)
+        # right edge
         for idx in range(self.grid_height):
             img = Image.new('1', self.sz, color='black')
-            x = self.sz[0] - (self.sz[0] / self.grid_width)
-            y = (self.sz[1] / self.grid_height) * idx
+            x = self.effective_width - box_width + self.padding_left
+            y = box_height * idx + self.padding_top
             img.paste(
                 h_overlay, box=(x, y)
             )
             self.masks.append(img)
+        self.color_calculator = ColorCalculatorThread(self)
 
     def calc_next_step(self):
-        self.frame_count += 1
-        if self.frame_count >= 10:
-            self.frame_count = 0
-            # capture screenshot
-            import gtk.gdk
-            from PIL import Image
-            from PIL import ImageStat
-            pb = gtk.gdk.Pixbuf(gtk.gdk.COLORSPACE_RGB, False, 8, self.sz[0], self.sz[1])
-            pb = pb.get_from_drawable(self.w, self.w.get_colormap(), 0, 0, 0, 0, self.sz[0], self.sz[1])
-            if not pb:
-                print('Error: cannot capture screen')
-                return False
-            width, height = pb.get_width(), pb.get_height()
-            img = Image.frombytes("RGB", (width, height), pb.get_pixels())
-            for idx in range(self.grid_height * 2 + self.grid_width):
-                s = ImageStat.Stat(img, self.masks[idx])
-                self.target_colors[idx] = s.median
+        self.frames += 1
+        if not self.color_calculator.isAlive():
+            self.color_calculator = ColorCalculatorThread(self)
+            self.color_calculator.start()
 
         def next_fade_step(block):
             try:
